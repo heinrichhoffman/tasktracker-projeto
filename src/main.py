@@ -34,11 +34,13 @@ def cadastrar_tarefa():
             
     descricao = input("Descrição (opcional): ").strip()
     
-    # R02: Validação de Prioridade
-    prioridades_validas = ["Alta", "Média", "Baixa"]
+    # R02: Validação de Prioridade (Ajustado para aceitar "Media" sem acento)
+    prioridades_validas = ["Alta", "Média", "Media", "Baixa"]
     while True:
         prioridade = input("Prioridade (Alta / Média / Baixa): ").strip().capitalize()
         if prioridade in prioridades_validas:
+            if prioridade == "Media":
+                prioridade = "Média" # Padroniza com acento
             break
         else:
             print("Erro (R02): Prioridade inválida. Escolha somente entre Alta, Média ou Baixa.")
