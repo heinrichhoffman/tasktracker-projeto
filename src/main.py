@@ -6,9 +6,22 @@ from datetime import datetime, date
 
 # ==========================================
 # TaskTracker - Sistema de Gerenciamento
+# Compatível com VS Code e Google Colab
 # ==========================================
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+try:
+    PASTA_SCRIPT = os.path.dirname(os.path.abspath(__file__))
+except NameError:
+    # Google Colab / Jupyter
+    PASTA_SCRIPT = os.getcwd()
+
+# Permite configurar uma pasta específica para os dados.
+# Útil para usar o Google Drive no Colab.
+BASE_DIR = os.environ.get("TASKTRACKER_DIR", PASTA_SCRIPT)
+BASE_DIR = os.path.abspath(BASE_DIR)
+
+os.makedirs(BASE_DIR, exist_ok=True)
+
 ARQUIVO_DADOS = os.path.join(BASE_DIR, "tarefas.json")
 
 PRIORIDADES = ["Alta", "Média", "Baixa"]
@@ -61,20 +74,19 @@ def validar_data(valor):
 
     valor = valor.strip()
 
-    if valor.casefold() == "não informada":
-        return "Não informada"
-
-    if valor == "":
+    if valor.casefold() == "não informada" or valor == "":
         return "Não informada"
 
     try:
-        data = datetime.strptime(valor, "%d/%m/%Y").date()
+        data_validada = datetime.strptime(
+            valor, "%d/%m/%Y"
+        ).date()
 
-        # Garante que a entrada siga exatamente o formato esperado.
-        if data.strftime("%d/%m/%Y") != valor:
+        # Exige exatamente o formato DD/MM/AAAA.
+        if data_validada.strftime("%d/%m/%Y") != valor:
             return None
 
-        return data.strftime("%d/%m/%Y")
+        return data_validada.strftime("%d/%m/%Y")
 
     except ValueError:
         return None
@@ -95,34 +107,43 @@ def validar_tarefa(tarefa):
 
     identificador = tarefa["id"]
 
-    # bool é uma subclasse de int em Python; por isso,
-    # verificamos o tipo exato.
+    # bool também é considerado int em Python.
     if type(identificador) is not int or identificador <= 0:
         raise ValueError("ID deve ser um inteiro positivo.")
 
     titulo = tarefa["titulo"]
 
     if not isinstance(titulo, str) or not titulo.strip():
-        raise ValueError(f"Título inválido na tarefa {identificador}.")
+        raise ValueError(
+            f"Título inválido na tarefa {identificador}."
+        )
 
     prioridade = normalizar_prioridade(tarefa["prioridade"])
     status = normalizar_status(tarefa["status"])
 
     if prioridade is None:
-        raise ValueError(f"Prioridade inválida na tarefa {identificador}.")
+        raise ValueError(
+            f"Prioridade inválida na tarefa {identificador}."
+        )
 
     if status is None:
-        raise ValueError(f"Status inválido na tarefa {identificador}.")
+        raise ValueError(
+            f"Status inválido na tarefa {identificador}."
+        )
 
     descricao = tarefa.get("descricao", "")
 
     if not isinstance(descricao, str):
-        raise ValueError(f"Descrição inválida na tarefa {identificador}.")
+        raise ValueError(
+            f"Descrição inválida na tarefa {identificador}."
+        )
 
     data_limite = validar_data(tarefa.get("data_limite", ""))
 
     if data_limite is None:
-        raise ValueError(f"Data inválida na tarefa {identificador}.")
+        raise ValueError(
+            f"Data inválida na tarefa {identificador}."
+        )
 
     return {
         "id": identificador,
@@ -152,7 +173,9 @@ def carregar_dados():
             dados = json.load(arquivo)
 
         if not isinstance(dados, list):
-            raise ValueError("O arquivo deve conter uma lista de tarefas.")
+            raise ValueError(
+                "O arquivo deve conter uma lista de tarefas."
+            )
 
         tarefas_carregadas = []
         ids_encontrados = set()
@@ -161,12 +184,14 @@ def carregar_dados():
             tarefa = validar_tarefa(registro)
 
             if tarefa["id"] in ids_encontrados:
-                raise ValueError(f"ID duplicado: {tarefa['id']}.")
+                raise ValueError(
+                    f"ID duplicado: {tarefa['id']}."
+                )
 
             ids_encontrados.add(tarefa["id"])
             tarefas_carregadas.append(tarefa)
 
-        # Só atualiza o estado após validar todos os registros.
+        # Atualiza o estado somente após validar tudo.
         tarefas = tarefas_carregadas
         id_contador = max(ids_encontrados, default=0) + 1
 
@@ -178,7 +203,7 @@ def carregar_dados():
 
 
 def salvar_dados():
-    """Grava o JSON temporariamente e substitui o arquivo original."""
+    """Salva o JSON temporariamente e substitui o arquivo original."""
     caminho_temporario = None
 
     try:
@@ -203,13 +228,16 @@ def salvar_dados():
             arquivo.flush()
             os.fsync(arquivo.fileno())
 
-        # A substituição ocorre no mesmo diretório.
+        # O temporário fica no mesmo diretório do destino.
         os.replace(caminho_temporario, ARQUIVO_DADOS)
 
     except (OSError, TypeError, ValueError) as erro:
         print(f"\nErro ao salvar os dados: {erro}")
 
-        if caminho_temporario and os.path.exists(caminho_temporario):
+        if (
+            caminho_temporario
+            and os.path.exists(caminho_temporario)
+        ):
             try:
                 os.remove(caminho_temporario)
             except OSError:
@@ -418,9 +446,7 @@ def alterar_status(novo_status):
         print("\nNenhuma tarefa cadastrada.")
         return
 
-    identificador = solicitar_id(
-        "Digite o ID da tarefa: "
-    )
+    identificador = solicitar_id("Digite o ID da tarefa: ")
 
     if identificador is None:
         return
@@ -482,7 +508,7 @@ def editar_tarefa():
         print("Erro: tarefa não encontrada.")
         return
 
-    # Trabalhamos em uma cópia para evitar alterações parciais.
+    # Cópias para evitar alterações parciais.
     original = tarefa.copy()
     editada = tarefa.copy()
 
@@ -519,7 +545,9 @@ def editar_tarefa():
             editada["prioridade"] = prioridade
             break
 
-        print("Prioridade inválida. Escolha Alta, Média ou Baixa.")
+        print(
+            "Prioridade inválida. Escolha Alta, Média ou Baixa."
+        )
 
     while True:
         entrada = input(
@@ -618,10 +646,7 @@ def filtrar_tarefas():
     resultados = []
 
     if opcao == "1":
-        entrada = input(
-            "Status (Pendente / Concluída): "
-        )
-
+        entrada = input("Status (Pendente / Concluída): ")
         status = normalizar_status(entrada)
 
         if status is None:
@@ -633,10 +658,7 @@ def filtrar_tarefas():
         ]
 
     elif opcao == "2":
-        entrada = input(
-            "Prioridade (Alta / Média / Baixa): "
-        )
-
+        entrada = input("Prioridade (Alta / Média / Baixa): ")
         prioridade = normalizar_prioridade(entrada)
 
         if prioridade is None:
@@ -694,7 +716,9 @@ def menu_principal():
         carregar_dados()
     except RuntimeError as erro:
         print(f"\nERRO CRÍTICO: {erro}")
-        print("O programa será encerrado para preservar os dados.")
+        print(
+            "O programa será encerrado para preservar os dados."
+        )
         return
 
     while True:
@@ -711,9 +735,9 @@ def menu_principal():
         print("8. Sair")
         print("=" * 35)
 
-        opcao = input("Escolha uma opção (1-8): ").strip()
-
         try:
+            opcao = input("Escolha uma opção (1-8): ").strip()
+
             if opcao == "1":
                 cadastrar_tarefa()
             elif opcao == "2":
@@ -734,15 +758,25 @@ def menu_principal():
             else:
                 print("Erro: escolha uma opção entre 1 e 8.")
 
-        except (EOFError, KeyboardInterrupt):
-            print("\nOperação interrompida pelo usuário.")
+        except KeyboardInterrupt:
+            print("\n\nPrograma interrompido pelo usuário.")
+            break
+
+        except EOFError:
+            print(
+                "\nEntrada encerrada. "
+                "O programa será finalizado."
+            )
+            break
 
         except RuntimeError as erro:
-            print(f"\nNão foi possível concluir a operação: {erro}")
+            print(
+                f"\nNão foi possível concluir a operação: {erro}"
+            )
 
 
 # ==========================================
-# PONTO DE ENTRADA
+# 10. PONTO DE ENTRADA
 # ==========================================
 
 if __name__ == "__main__":
