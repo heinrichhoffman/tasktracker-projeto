@@ -1,243 +1,749 @@
+
 import json
 import os
+import tempfile
+from datetime import datetime, date
 
 # ==========================================
-# TaskTracker - Sistema de Gerenciamento de Tarefas
+# TaskTracker - Sistema de Gerenciamento
 # ==========================================
 
-ARQUIVO_DADOS = 'tarefas.json'
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+ARQUIVO_DADOS = os.path.join(BASE_DIR, "tarefas.json")
+
+PRIORIDADES = ["Alta", "Média", "Baixa"]
+STATUS_VALIDOS = ["Pendente", "Concluída"]
+
 tarefas = []
 id_contador = 1
 
+
+# ==========================================
+# 1. VALIDAÇÃO E NORMALIZAÇÃO
+# ==========================================
+
+def normalizar_prioridade(valor):
+    """Padroniza prioridades, aceitando variações de acentuação."""
+    if not isinstance(valor, str):
+        return None
+
+    prioridades = {
+        "alta": "Alta",
+        "média": "Média",
+        "media": "Média",
+        "baixa": "Baixa"
+    }
+
+    return prioridades.get(valor.strip().casefold())
+
+
+def normalizar_status(valor):
+    """Padroniza os status aceitos pelo sistema."""
+    if not isinstance(valor, str):
+        return None
+
+    status = {
+        "pendente": "Pendente",
+        "concluída": "Concluída",
+        "concluida": "Concluída"
+    }
+
+    return status.get(valor.strip().casefold())
+
+
+def validar_data(valor):
+    """
+    Aceita DD/MM/AAAA, string vazia ou 'Não informada'.
+    Retorna a data padronizada ou None se inválida.
+    """
+    if not isinstance(valor, str):
+        return None
+
+    valor = valor.strip()
+
+    if valor.casefold() == "não informada":
+        return "Não informada"
+
+    if valor == "":
+        return "Não informada"
+
+    try:
+        data = datetime.strptime(valor, "%d/%m/%Y").date()
+
+        # Garante que a entrada siga exatamente o formato esperado.
+        if data.strftime("%d/%m/%Y") != valor:
+            return None
+
+        return data.strftime("%d/%m/%Y")
+
+    except ValueError:
+        return None
+
+
+def validar_tarefa(tarefa):
+    """Valida e padroniza um registro carregado do JSON."""
+    if not isinstance(tarefa, dict):
+        raise ValueError("Uma tarefa não é um objeto válido.")
+
+    campos_obrigatorios = [
+        "id", "titulo", "prioridade", "status"
+    ]
+
+    for campo in campos_obrigatorios:
+        if campo not in tarefa:
+            raise ValueError(f"Campo ausente: {campo}")
+
+    identificador = tarefa["id"]
+
+    # bool é uma subclasse de int em Python; por isso,
+    # verificamos o tipo exato.
+    if type(identificador) is not int or identificador <= 0:
+        raise ValueError("ID deve ser um inteiro positivo.")
+
+    titulo = tarefa["titulo"]
+
+    if not isinstance(titulo, str) or not titulo.strip():
+        raise ValueError(f"Título inválido na tarefa {identificador}.")
+
+    prioridade = normalizar_prioridade(tarefa["prioridade"])
+    status = normalizar_status(tarefa["status"])
+
+    if prioridade is None:
+        raise ValueError(f"Prioridade inválida na tarefa {identificador}.")
+
+    if status is None:
+        raise ValueError(f"Status inválido na tarefa {identificador}.")
+
+    descricao = tarefa.get("descricao", "")
+
+    if not isinstance(descricao, str):
+        raise ValueError(f"Descrição inválida na tarefa {identificador}.")
+
+    data_limite = validar_data(tarefa.get("data_limite", ""))
+
+    if data_limite is None:
+        raise ValueError(f"Data inválida na tarefa {identificador}.")
+
+    return {
+        "id": identificador,
+        "titulo": titulo.strip(),
+        "descricao": descricao.strip(),
+        "prioridade": prioridade,
+        "data_limite": data_limite,
+        "status": status
+    }
+
+
+# ==========================================
+# 2. PERSISTÊNCIA EM JSON
+# ==========================================
+
 def carregar_dados():
-    """Carrega os dados do arquivo JSON para a memória."""
+    """Carrega e valida os dados antes de disponibilizá-los."""
     global tarefas, id_contador
-    if os.path.exists(ARQUIVO_DADOS):
-        with open(ARQUIVO_DADOS, 'r', encoding='utf-8') as f:
-            tarefas = json.load(f)
-            if tarefas:
-                # Atualiza o contador de ID para ser o maior ID existente + 1
-                id_contador = max(t['id'] for t in tarefas) + 1
+
+    if not os.path.exists(ARQUIVO_DADOS):
+        tarefas = []
+        id_contador = 1
+        return
+
+    try:
+        with open(ARQUIVO_DADOS, "r", encoding="utf-8") as arquivo:
+            dados = json.load(arquivo)
+
+        if not isinstance(dados, list):
+            raise ValueError("O arquivo deve conter uma lista de tarefas.")
+
+        tarefas_carregadas = []
+        ids_encontrados = set()
+
+        for registro in dados:
+            tarefa = validar_tarefa(registro)
+
+            if tarefa["id"] in ids_encontrados:
+                raise ValueError(f"ID duplicado: {tarefa['id']}.")
+
+            ids_encontrados.add(tarefa["id"])
+            tarefas_carregadas.append(tarefa)
+
+        # Só atualiza o estado após validar todos os registros.
+        tarefas = tarefas_carregadas
+        id_contador = max(ids_encontrados, default=0) + 1
+
+    except (OSError, json.JSONDecodeError, ValueError, TypeError) as erro:
+        raise RuntimeError(
+            f"Não foi possível carregar {ARQUIVO_DADOS}: {erro}. "
+            "Corrija ou recupere o arquivo antes de continuar."
+        ) from erro
+
 
 def salvar_dados():
-    """Salva a lista de tarefas atual no arquivo JSON."""
-    with open(ARQUIVO_DADOS, 'w', encoding='utf-8') as f:
-        json.dump(tarefas, f, ensure_ascii=False, indent=4)
+    """Grava o JSON temporariamente e substitui o arquivo original."""
+    caminho_temporario = None
+
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=BASE_DIR,
+            prefix="tarefas_",
+            suffix=".tmp",
+            delete=False
+        ) as arquivo:
+            caminho_temporario = arquivo.name
+
+            json.dump(
+                tarefas,
+                arquivo,
+                ensure_ascii=False,
+                indent=4
+            )
+
+            arquivo.write("\n")
+            arquivo.flush()
+            os.fsync(arquivo.fileno())
+
+        # A substituição ocorre no mesmo diretório.
+        os.replace(caminho_temporario, ARQUIVO_DADOS)
+
+    except (OSError, TypeError, ValueError) as erro:
+        print(f"\nErro ao salvar os dados: {erro}")
+
+        if caminho_temporario and os.path.exists(caminho_temporario):
+            try:
+                os.remove(caminho_temporario)
+            except OSError:
+                pass
+
+        raise RuntimeError(
+            "A alteração não pôde ser salva no arquivo JSON."
+        ) from erro
+
+
+# ==========================================
+# 3. EXIBIÇÃO E RELATÓRIOS
+# ==========================================
+
+def imprimir_tarefa(t):
+    """Exibe os detalhes de uma tarefa."""
+    print("-" * 45)
+    print(f"ID: {t['id']}")
+    print(f"Título: {t['titulo']}")
+    print(f"Descrição: {t['descricao'] or 'Não informada'}")
+    print(f"Prioridade: {t['prioridade']}")
+    print(f"Data limite: {t['data_limite']}")
+    print(f"Status: {t['status']}")
+
+
+def tarefa_vencida(t, hoje=None):
+    """Verifica se uma tarefa pendente já passou do prazo."""
+    if hoje is None:
+        hoje = date.today()
+
+    if t["status"] != "Pendente":
+        return False
+
+    if t["data_limite"] == "Não informada":
+        return False
+
+    prazo = datetime.strptime(
+        t["data_limite"], "%d/%m/%Y"
+    ).date()
+
+    return prazo < hoje
+
 
 def exibir_totalizadores(lista_alvo=None):
-    """Exibe o totalizador de status. Pode receber uma lista filtrada ou usar a global."""
+    """Apresenta estatísticas da lista completa ou filtrada."""
     if lista_alvo is None:
         lista_alvo = tarefas
-        
-    pendentes = sum(1 for t in lista_alvo if t['status'] == 'Pendente')
-    concluidas = sum(1 for t in lista_alvo if t['status'] == 'Concluída')
-            
-    print(f"\nResumo: {pendentes} tarefa(s) pendente(s) | {concluidas} tarefa(s) concluída(s)")
+
+    total = len(lista_alvo)
+
+    pendentes = sum(
+        t["status"] == "Pendente" for t in lista_alvo
+    )
+
+    concluidas = sum(
+        t["status"] == "Concluída" for t in lista_alvo
+    )
+
+    vencidas = sum(
+        tarefa_vencida(t) for t in lista_alvo
+    )
+
+    alta = sum(
+        t["prioridade"] == "Alta" for t in lista_alvo
+    )
+
+    percentual = concluidas / total * 100 if total else 0
+
+    print("\n" + "=" * 45)
+    print("RESUMO DAS TAREFAS")
+    print("=" * 45)
+    print(f"Total: {total}")
+    print(f"Pendentes: {pendentes}")
+    print(f"Concluídas: {concluidas}")
+    print(f"Vencidas: {vencidas}")
+    print(f"Prioridade alta: {alta}")
+    print(f"Conclusão: {percentual:.1f}%")
+    print("=" * 45)
+
+
+def chave_ordenacao(t):
+    """Ordena por prioridade e, depois, pela data limite."""
+    ordem_prioridade = {
+        "Alta": 0,
+        "Média": 1,
+        "Baixa": 2
+    }
+
+    if t["data_limite"] == "Não informada":
+        prazo = date.max
+    else:
+        prazo = datetime.strptime(
+            t["data_limite"], "%d/%m/%Y"
+        ).date()
+
+    return ordem_prioridade[t["prioridade"]], prazo
+
+
+def visualizar_tarefas():
+    print("\n--- Lista de Tarefas ---")
+
+    if not tarefas:
+        print("Nenhuma tarefa cadastrada.")
+        exibir_totalizadores()
+        return
+
+    for t in sorted(tarefas, key=chave_ordenacao):
+        imprimir_tarefa(t)
+
+    exibir_totalizadores()
+
+
+# ==========================================
+# 4. CADASTRO
+# ==========================================
 
 def cadastrar_tarefa():
     global id_contador
+
     print("\n--- Cadastrar Nova Tarefa ---")
-    
+
     while True:
         titulo = input("Título da tarefa: ").strip()
-        if titulo == "":
-            print("Erro: O Título da tarefa não pode estar em branco. Tente novamente.")
-        else:
+
+        if titulo:
             break
-            
+
+        print("Erro: o título não pode ficar em branco.")
+
     descricao = input("Descrição (opcional): ").strip()
-    
-    prioridades_validas = ["Alta", "Média", "Media", "Baixa"]
+
     while True:
-        prioridade = input("Prioridade (Alta / Média / Baixa): ").strip().capitalize()
-        if prioridade in prioridades_validas:
-            if prioridade == "Media":
-                prioridade = "Média"
+        entrada = input(
+            "Prioridade (Alta / Média / Baixa): "
+        )
+
+        prioridade = normalizar_prioridade(entrada)
+
+        if prioridade:
             break
-        else:
-            print("Erro: Prioridade inválida. Escolha somente entre Alta, Média ou Baixa.")
-            
-    data_limite = input("Data Limite (opcional - pressione Enter para pular): ").strip()
-    
+
+        print("Erro: escolha Alta, Média ou Baixa.")
+
+    while True:
+        entrada = input(
+            "Data limite (DD/MM/AAAA ou Enter para pular): "
+        ).strip()
+
+        data_limite = validar_data(entrada)
+
+        if data_limite is not None:
+            break
+
+        print("Data inválida. Use o formato DD/MM/AAAA.")
+
     nova_tarefa = {
         "id": id_contador,
         "titulo": titulo,
         "descricao": descricao,
         "prioridade": prioridade,
-        "data_limite": data_limite if data_limite else "Não informada",
+        "data_limite": data_limite,
         "status": "Pendente"
     }
-    
+
     tarefas.append(nova_tarefa)
-    id_contador += 1
-    salvar_dados() # Salva no JSON
-    print("\nSucesso: Tarefa cadastrada com sucesso!")
 
-def imprimir_tarefa(t):
-    """Função auxiliar para imprimir uma tarefa formatada."""
-    print("-" * 40)
-    print(f"ID: {t['id']}")
-    print(f"Título: {t['titulo']}")
-    print(f"Descrição: {t.get('descricao', '')}")
-    print(f"Prioridade: {t['prioridade']}")
-    print(f"Data Limite: {t['data_limite']}")
-    print(f"Status: {t['status']}")
-
-def visualizar_tarefas():
-    print("\n--- Lista de Tarefas ---")
-    if not tarefas:
-        print("Nenhuma tarefa cadastrada no momento.")
+    try:
+        salvar_dados()
+    except RuntimeError:
+        tarefas.pop()
         return
 
-    for t in tarefas:
-        imprimir_tarefa(t)
-    exibir_totalizadores()
+    id_contador += 1
+    print("\nSucesso: tarefa cadastrada!")
+
+
+# ==========================================
+# 5. LOCALIZAÇÃO E STATUS
+# ==========================================
+
+def buscar_por_id(identificador):
+    """Retorna uma tarefa pelo ID ou None se não existir."""
+    return next(
+        (t for t in tarefas if t["id"] == identificador),
+        None
+    )
+
+
+def solicitar_id(mensagem):
+    """Solicita e valida um ID."""
+    try:
+        identificador = int(input(mensagem).strip())
+
+        if identificador <= 0:
+            raise ValueError
+
+        return identificador
+
+    except ValueError:
+        print("Erro: informe um ID inteiro positivo.")
+        return None
+
+
+def alterar_status(novo_status):
+    if not tarefas:
+        print("\nNenhuma tarefa cadastrada.")
+        return
+
+    identificador = solicitar_id(
+        "Digite o ID da tarefa: "
+    )
+
+    if identificador is None:
+        return
+
+    tarefa = buscar_por_id(identificador)
+
+    if tarefa is None:
+        print("Erro: tarefa não encontrada.")
+        return
+
+    status_anterior = tarefa["status"]
+
+    if status_anterior == novo_status:
+        print(f"A tarefa já está com status '{novo_status}'.")
+        return
+
+    tarefa["status"] = novo_status
+
+    try:
+        salvar_dados()
+    except RuntimeError:
+        tarefa["status"] = status_anterior
+        return
+
+    print(f"Tarefa atualizada para '{novo_status}'!")
+
 
 def concluir_tarefa():
-    if not tarefas:
-        print("\nErro: Nenhuma tarefa cadastrada no sistema ainda.")
-        return
-        
     print("\n--- Concluir Tarefa ---")
-    try:
-        id_informado = int(input("Digite o ID da tarefa que deseja concluir: "))
-    except ValueError:
-        print("Erro: O ID informado deve ser um número inteiro.")
-        return
+    alterar_status("Concluída")
 
-    for t in tarefas:
-        if t['id'] == id_informado:
-            if t['status'] == 'Pendente':
-                t['status'] = 'Concluída'
-                salvar_dados()
-                print("\nSucesso: Tarefa concluída com sucesso!")
-            else:
-                print("\nAviso: Esta tarefa já foi finalizada anteriormente.")
-            return
-            
-    print("\nErro: Tarefa não encontrada. Verifique o ID e tente novamente.")
+
+def reabrir_tarefa():
+    print("\n--- Reabrir Tarefa ---")
+    alterar_status("Pendente")
+
+
+# ==========================================
+# 6. EDIÇÃO
+# ==========================================
 
 def editar_tarefa():
     print("\n--- Editar Tarefa ---")
-    try:
-        id_informado = int(input("Digite o ID da tarefa que deseja editar: "))
-    except ValueError:
-        print("Erro: O ID deve ser um número inteiro.")
+
+    if not tarefas:
+        print("Nenhuma tarefa cadastrada.")
         return
 
-    for t in tarefas:
-        if t['id'] == id_informado:
-            print("Deixe o campo em branco e pressione Enter se não quiser alterá-lo.")
-            
-            novo_titulo = input(f"Título atual ({t['titulo']}): ").strip()
-            if novo_titulo: t['titulo'] = novo_titulo
-            
-            nova_desc = input(f"Descrição atual ({t['descricao']}): ").strip()
-            if nova_desc: t['descricao'] = nova_desc
-            
-            nova_prio = input(f"Prioridade atual ({t['prioridade']}): ").strip().capitalize()
-            if nova_prio in ["Alta", "Média", "Media", "Baixa"]:
-                t['prioridade'] = "Média" if nova_prio == "Media" else nova_prio
-                
-            nova_data = input(f"Data Limite atual ({t['data_limite']}): ").strip()
-            if nova_data: t['data_limite'] = nova_data
+    identificador = solicitar_id(
+        "Digite o ID da tarefa que deseja editar: "
+    )
 
-            salvar_dados()
-            print("\nSucesso: Tarefa atualizada!")
-            return
-            
-    print("\nErro: Tarefa não encontrada.")
+    if identificador is None:
+        return
+
+    tarefa = buscar_por_id(identificador)
+
+    if tarefa is None:
+        print("Erro: tarefa não encontrada.")
+        return
+
+    # Trabalhamos em uma cópia para evitar alterações parciais.
+    original = tarefa.copy()
+    editada = tarefa.copy()
+
+    print("\nPressione Enter para manter o valor atual.")
+    print("Digite /limpar para limpar campos opcionais.")
+
+    titulo = input(
+        f"Título [{editada['titulo']}]: "
+    ).strip()
+
+    if titulo:
+        editada["titulo"] = titulo
+
+    descricao = input(
+        f"Descrição [{editada['descricao']}]: "
+    ).strip()
+
+    if descricao.casefold() == "/limpar":
+        editada["descricao"] = ""
+    elif descricao:
+        editada["descricao"] = descricao
+
+    while True:
+        entrada = input(
+            f"Prioridade [{editada['prioridade']}]: "
+        ).strip()
+
+        if not entrada:
+            break
+
+        prioridade = normalizar_prioridade(entrada)
+
+        if prioridade:
+            editada["prioridade"] = prioridade
+            break
+
+        print("Prioridade inválida. Escolha Alta, Média ou Baixa.")
+
+    while True:
+        entrada = input(
+            f"Data limite [{editada['data_limite']}]: "
+        ).strip()
+
+        if not entrada:
+            break
+
+        if entrada.casefold() == "/limpar":
+            editada["data_limite"] = "Não informada"
+            break
+
+        data_limite = validar_data(entrada)
+
+        if data_limite is not None:
+            editada["data_limite"] = data_limite
+            break
+
+        print("Data inválida. Use DD/MM/AAAA ou /limpar.")
+
+    if editada == original:
+        print("Nenhuma alteração realizada.")
+        return
+
+    tarefa.update(editada)
+
+    try:
+        salvar_dados()
+    except RuntimeError:
+        tarefa.update(original)
+        return
+
+    print("Sucesso: tarefa atualizada!")
+
+
+# ==========================================
+# 7. EXCLUSÃO
+# ==========================================
 
 def excluir_tarefa():
-    global tarefas
     print("\n--- Excluir Tarefa ---")
-    try:
-        id_informado = int(input("Digite o ID da tarefa que deseja excluir: "))
-    except ValueError:
-        print("Erro: O ID deve ser um número inteiro.")
+
+    if not tarefas:
+        print("Nenhuma tarefa cadastrada.")
         return
 
-    tamanho_original = len(tarefas)
-    tarefas = [t for t in tarefas if t['id'] != id_informado]
-    
-    if len(tarefas) < tamanho_original:
+    identificador = solicitar_id(
+        "Digite o ID da tarefa que deseja excluir: "
+    )
+
+    if identificador is None:
+        return
+
+    tarefa = buscar_por_id(identificador)
+
+    if tarefa is None:
+        print("Erro: tarefa não encontrada.")
+        return
+
+    imprimir_tarefa(tarefa)
+
+    confirmacao = input(
+        "\nConfirma a exclusão? (s/n): "
+    ).strip().casefold()
+
+    if confirmacao not in ("s", "sim"):
+        print("Exclusão cancelada.")
+        return
+
+    indice = tarefas.index(tarefa)
+    removida = tarefas.pop(indice)
+
+    try:
         salvar_dados()
-        print("\nSucesso: Tarefa excluída!")
-    else:
-        print("\nErro: Tarefa não encontrada.")
+    except RuntimeError:
+        tarefas.insert(indice, removida)
+        return
+
+    print("Sucesso: tarefa excluída!")
+
+
+# ==========================================
+# 8. FILTROS E BUSCAS
+# ==========================================
 
 def filtrar_tarefas():
-    print("\n--- Filtrar Tarefas ---")
-    print("1. Por Status (Pendente/Concluída)")
-    print("2. Por Prioridade (Alta/Média/Baixa)")
-    print("3. Buscar por palavra no título")
-    
-    opcao = input("Escolha uma opção de filtro (1-3): ").strip()
+    print("\n--- Filtrar / Buscar Tarefas ---")
+    print("1. Por status")
+    print("2. Por prioridade")
+    print("3. Por palavra-chave no título ou descrição")
+    print("4. Somente tarefas vencidas")
+
+    opcao = input("Escolha uma opção (1-4): ").strip()
+
     resultados = []
-    
-    if opcao == '1':
-        status_busca = input("Digite o status (Pendente ou Concluída): ").strip().capitalize()
-        if status_busca in ['Pendente', 'Concluida']: status_busca = 'Concluída' if status_busca == 'Concluida' else 'Pendente'
-        resultados = [t for t in tarefas if t['status'] == status_busca]
-        
-    elif opcao == '2':
-        prio_busca = input("Digite a prioridade (Alta, Média ou Baixa): ").strip().capitalize()
-        if prio_busca == 'Media': prio_busca = 'Média'
-        resultados = [t for t in tarefas if t['prioridade'] == prio_busca]
-        
-    elif opcao == '3':
-        termo = input("Digite a palavra-chave para buscar no título: ").strip().lower()
-        resultados = [t for t in tarefas if termo in t['titulo'].lower()]
-        
+
+    if opcao == "1":
+        entrada = input(
+            "Status (Pendente / Concluída): "
+        )
+
+        status = normalizar_status(entrada)
+
+        if status is None:
+            print("Status inválido.")
+            return
+
+        resultados = [
+            t for t in tarefas if t["status"] == status
+        ]
+
+    elif opcao == "2":
+        entrada = input(
+            "Prioridade (Alta / Média / Baixa): "
+        )
+
+        prioridade = normalizar_prioridade(entrada)
+
+        if prioridade is None:
+            print("Prioridade inválida.")
+            return
+
+        resultados = [
+            t for t in tarefas
+            if t["prioridade"] == prioridade
+        ]
+
+    elif opcao == "3":
+        termo = input("Palavra-chave: ").strip().casefold()
+
+        if not termo:
+            print("Informe uma palavra-chave.")
+            return
+
+        resultados = [
+            t for t in tarefas
+            if termo in t["titulo"].casefold()
+            or termo in t["descricao"].casefold()
+        ]
+
+    elif opcao == "4":
+        resultados = [
+            t for t in tarefas if tarefa_vencida(t)
+        ]
+
     else:
         print("Opção inválida.")
         return
 
-    if not resultados:
-        print("\nNenhuma tarefa encontrada com esse filtro.")
-    else:
-        print(f"\n--- Resultados da Busca ({len(resultados)} encontrada(s)) ---")
-        for t in resultados:
-            imprimir_tarefa(t)
-        exibir_totalizadores(resultados)
+    resultados = sorted(resultados, key=chave_ordenacao)
 
+    if not resultados:
+        print("\nNenhuma tarefa encontrada.")
+        exibir_totalizadores(resultados)
+        return
+
+    print(f"\n--- Resultados: {len(resultados)} tarefa(s) ---")
+
+    for t in resultados:
+        imprimir_tarefa(t)
+
+    exibir_totalizadores(resultados)
+
+
+# ==========================================
+# 9. MENU PRINCIPAL
+# ==========================================
 
 def menu_principal():
-    carregar_dados() # Carrega os dados salvos ao abrir o programa
-    
-    while True:
-        print("\n" + "="*30)
-        print("       TASKTRACKER")
-        print("="*30)
-        print("1. Cadastrar Tarefa")
-        print("2. Visualizar Tarefas")
-        print("3. Concluir Tarefa")
-        print("4. Editar Tarefa")
-        print("5. Excluir Tarefa")
-        print("6. Filtrar/Buscar Tarefas")
-        print("7. Sair")
-        print("="*30)
-        
-        opcao = input("Escolha uma opção (1-7): ").strip()
-        
-        if opcao == '1':
-            cadastrar_tarefa()
-        elif opcao == '2':
-            visualizar_tarefas()
-        elif opcao == '3':
-            concluir_tarefa()
-        elif opcao == '4':
-            editar_tarefa()
-        elif opcao == '5':
-            excluir_tarefa()
-        elif opcao == '6':
-            filtrar_tarefas()
-        elif opcao == '7':
-            print("\nEncerrando o TaskTracker... Até logo!")
-            break
-        else:
-            print("\nErro: Opção inválida! Escolha um número entre 1 e 7.")
+    try:
+        carregar_dados()
+    except RuntimeError as erro:
+        print(f"\nERRO CRÍTICO: {erro}")
+        print("O programa será encerrado para preservar os dados.")
+        return
 
-# Ponto de entrada do sistema
+    while True:
+        print("\n" + "=" * 35)
+        print("           TASKTRACKER")
+        print("=" * 35)
+        print("1. Cadastrar tarefa")
+        print("2. Visualizar tarefas")
+        print("3. Concluir tarefa")
+        print("4. Editar tarefa")
+        print("5. Excluir tarefa")
+        print("6. Filtrar / buscar tarefas")
+        print("7. Reabrir tarefa")
+        print("8. Sair")
+        print("=" * 35)
+
+        opcao = input("Escolha uma opção (1-8): ").strip()
+
+        try:
+            if opcao == "1":
+                cadastrar_tarefa()
+            elif opcao == "2":
+                visualizar_tarefas()
+            elif opcao == "3":
+                concluir_tarefa()
+            elif opcao == "4":
+                editar_tarefa()
+            elif opcao == "5":
+                excluir_tarefa()
+            elif opcao == "6":
+                filtrar_tarefas()
+            elif opcao == "7":
+                reabrir_tarefa()
+            elif opcao == "8":
+                print("\nEncerrando o TaskTracker... Até logo!")
+                break
+            else:
+                print("Erro: escolha uma opção entre 1 e 8.")
+
+        except (EOFError, KeyboardInterrupt):
+            print("\nOperação interrompida pelo usuário.")
+
+        except RuntimeError as erro:
+            print(f"\nNão foi possível concluir a operação: {erro}")
+
+
+# ==========================================
+# PONTO DE ENTRADA
+# ==========================================
+
 if __name__ == "__main__":
     menu_principal()
